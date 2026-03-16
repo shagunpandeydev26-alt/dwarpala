@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════════
+# Dwarpala — Model Configuration
+# ═══════════════════════════════════════════════════════════════
+
+kavach:
+  # Face Detection
+  detector:
+    name: "scrfd"                    # scrfd | retinaface
+    model_size: "10gf"               # 2.5gf | 10gf | 34gf
+    confidence_threshold: 0.5
+    nms_threshold: 0.4
+    max_faces: 1                     # We only need 1 face for verification
+
+  # Face Alignment
+  aligner:
+    output_size: [112, 112]          # Standard ArcFace input size
+    reference_landmarks: "arcface"    # arcface | dlib
+
+  # Quality Assessment
+  quality:
+    min_blur_score: 50.0             # Laplacian variance threshold
+    min_brightness: 40               # Minimum pixel mean
+    max_brightness: 220              # Maximum pixel mean
+    min_face_size: 80                # Minimum face width in pixels
+    min_landmark_confidence: 0.8
+
+swarupa:
+  # ViT Backbone
+  backbone:
+    name: "vit_base_patch16_224"     # timm model name
+    pretrained: true
+    embedding_dim: 512
+    drop_rate: 0.1
+    drop_path_rate: 0.1
+
+  # ArcFace Loss
+  arcface:
+    scale: 64.0                      # Scale factor (s)
+    margin: 0.50                     # Angular margin (m)
+    sub_centers: 3                   # Number of sub-centers per class (K)
+    easy_margin: false
+
+  # Matcher
+  matcher:
+    similarity_metric: "cosine"      # cosine | euclidean
+    threshold: 0.45                  # Match threshold
+    high_confidence: 0.65            # Above this = very confident match
+
+prana:
+  # Texture Analysis (Layer 1)
+  texture:
+    lbp_radii: [1, 2, 3]            # Multi-scale LBP radii
+    lbp_points_multiplier: 8        # points = radius * multiplier
+    fft_threshold: 0.15             # FFT periodic pattern threshold
+
+  # Temporal Analysis (Layer 2)
+  temporal:
+    num_frames: 30                   # Frames to analyze
+    fps: 30                          # Expected frame rate
+    saccade_threshold: 0.3           # Pixel displacement threshold
+    tremor_freq_range: [8, 12]       # Hz — physiological tremor band
+
+  # rPPG Analysis (Layer 3)
+  rppg:
+    window_seconds: 3                # Seconds of video to analyze
+    bandpass_low: 0.7                # Hz (42 BPM)
+    bandpass_high: 4.0               # Hz (240 BPM)
+    min_snr: 3.0                     # Minimum signal-to-noise ratio
+    valid_bpm_range: [45, 200]       # Valid heart rate range
+
+  # Fusion Gate
+  fusion:
+    method: "weighted"               # weighted | mlp | early_exit
+    weights:
+      texture: 0.35
+      temporal: 0.30
+      rppg: 0.35
+    early_exit_threshold: 0.99       # Skip deeper checks if confident
+    liveness_threshold: 0.5          # Below = spoof, above = live
+
+dharma:
+  # Demographic Classifier
+  classifier:
+    backbone: "resnet18"
+    pretrained: true
+    num_age_groups: 7                # 0-2, 3-9, 10-19, 20-29, 30-39, 40-49, 50-59, 60+
+    num_genders: 2
+    num_ethnicities: 7               # Per FairFace categories
+
+  # Fairness
+  parity:
+    lambda_fairness: 0.1             # Weight of parity loss
+    max_fmr_differential: 5.0        # Maximum allowed FMR ratio
+
+yantra:
+  # Pipeline Settings
+  pipeline:
+    device: "auto"                   # auto | cpu | cuda | cuda:0
+    batch_liveness: true             # Run liveness checks in parallel
+    return_explanation: true
+    log_decisions: true

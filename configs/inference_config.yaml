@@ -1,0 +1,33 @@
+# ═══════════════════════════════════════════════════════════════
+# Dwarpala — Inference Configuration (Optimized for Speed)
+# ═══════════════════════════════════════════════════════════════
+
+device: "auto"                       # auto | cpu | cuda
+
+# Weights directory (relative to project root)
+weights_dir: "weights/"
+
+# Pre-processing
+kavach:
+  detector_confidence: 0.6
+  align_size: [112, 112]
+  quality_check: true
+
+# Identity matching
+swarupa:
+  use_onnx: false                    # Set true when ONNX model exported
+  match_threshold: 0.45
+
+# Liveness
+prana:
+  enable_texture: true
+  enable_temporal: true
+  enable_rppg: true
+  early_exit: true                   # Skip rPPG if texture/temporal confident
+  video_frames: 30                   # Frames needed for temporal + rPPG
+
+# Decision thresholds
+decision:
+  match_threshold: 0.45              # Face similarity threshold
+  liveness_threshold: 0.5            # Liveness score threshold
+  review_band: 0.1                   # If within this band of threshold → MANUAL_REVIEW
