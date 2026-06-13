@@ -12,7 +12,7 @@ model_dir: "~/.dwarpala/models/"
 
 # Pre-processing
 kavach:
-  detector_backend: "opencv"         # opencv (fallback) | scrfd (InsightFace)
+  detector_backend: "scrfd"          # scrfd (InsightFace, default) | opencv (Haar fallback)
   detector_confidence: 0.6
   align_size: [112, 112]
   quality_check: true

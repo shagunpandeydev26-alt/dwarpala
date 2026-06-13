@@ -330,9 +330,14 @@ def test_audit_log_sqlite(tmp_path):
 # ── integration tests requiring real models ──────────────────────────────────
 @pytest.mark.requires_models
 def test_verify_integration_real_models():
-    """Real /verify on a fixture ID + selfie. Asserts a sane verdict + latency."""
-    id_path = FIXTURES / "person_0_img_0.jpg"
-    selfie_path = TESTIMG / "selfie1.jpeg"
+    """
+    Real /verify on a matching pair of real selfies (same person, both live).
+    With the SCRFD default detector both faces are detected and the full
+    match + liveness path runs, so the verdict must be ACCEPT (was previously a
+    false 'no face' REJECT under the weak Haar default).
+    """
+    id_path = TESTIMG / "selfie1.jpeg"
+    selfie_path = TESTIMG / "selfie2.jpeg"
     if not id_path.exists() or not selfie_path.exists():
         pytest.skip("fixtures not available")
 
@@ -345,7 +350,7 @@ def test_verify_integration_real_models():
                 r = client.post(
                     "/verify",
                     files={
-                        "id_image": ("id.jpg", f1.read(), "image/jpeg"),
+                        "id_image": ("id.jpeg", f1.read(), "image/jpeg"),
                         "selfie": ("selfie.jpeg", f2.read(), "image/jpeg"),
                     },
                 )
@@ -354,7 +359,9 @@ def test_verify_integration_real_models():
 
     assert r.status_code == 200
     body = r.json()
-    assert body["verdict"] in {"ACCEPT", "REJECT", "MANUAL_REVIEW"}
+    assert body["verdict"] == "ACCEPT", f"expected ACCEPT, got {body}"
+    assert body["match_score"] > 0.0
+    assert body["liveness_score"] is not None
     assert isinstance(body["latency_ms"], (int, float))
     assert body["request_id"]
 

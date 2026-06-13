@@ -64,9 +64,7 @@ class FaceDetector:
             max_faces: Maximum number of faces to return.
         """
         if backend not in self.SUPPORTED_BACKENDS:
-            raise ValueError(
-                f"Unknown backend: {backend}. Supported: {self.SUPPORTED_BACKENDS}"
-            )
+            raise ValueError(f"Unknown backend: {backend}. Supported: {self.SUPPORTED_BACKENDS}")
 
         self.backend = backend
         self.confidence_threshold = confidence_threshold
@@ -92,9 +90,14 @@ class FaceDetector:
                     det_thresh=self.confidence_threshold,
                 )
                 logger.info(f"Loaded InsightFace ({self.backend}) backend")
-            except (ImportError, Exception) as e:
+            except Exception as e:
                 logger.warning(
-                    f"InsightFace not available ({e}), falling back to OpenCV"
+                    f"InsightFace/SCRFD detector unavailable or failed to load "
+                    f"({type(e).__name__}: {e}). FALLING BACK to OpenCV Haar cascade "
+                    f"— DETECTION QUALITY IS DEGRADED: expect missed or over-cropped "
+                    f"faces and false 'no face detected' rejects on harder images. "
+                    f"Install 'insightface' (and ensure onnxruntime loads) for "
+                    f"production-grade detection."
                 )
                 self.backend = "opencv"
                 self._initialize_opencv()
@@ -185,9 +188,7 @@ class FaceDetector:
         logger.info(f"Detected {len(detections)} face(s) via OpenCV")
         return detections
 
-    def _estimate_landmarks(
-        self, gray: np.ndarray, x: int, y: int, w: int, h: int
-    ) -> np.ndarray:
+    def _estimate_landmarks(self, gray: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
         """
         Estimate 5-point landmarks from face geometry when proper
         landmark detector is not available.

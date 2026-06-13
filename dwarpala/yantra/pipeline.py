@@ -186,7 +186,7 @@ class DwarpalaPipeline:
 
     def __init__(
         self,
-        detector_backend: str = "opencv",
+        detector_backend: str = "scrfd",
         embedding_backend: str = "insightface",
         match_threshold: float = 0.45,
         liveness_threshold: float = 0.5,

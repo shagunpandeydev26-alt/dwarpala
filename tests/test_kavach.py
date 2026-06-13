@@ -42,6 +42,40 @@ class TestFaceDetector:
         with pytest.raises(ValueError):
             FaceDetector(backend="invalid_backend")
 
+    def test_scrfd_falls_back_to_haar_with_warning(self, monkeypatch):
+        """
+        If SCRFD/InsightFace fails to load, the detector must fall back to the
+        OpenCV Haar cascade AND log a clear degradation warning (never silently).
+        """
+        import io
+        from loguru import logger as loguru_logger
+
+        try:
+            import insightface.app as ia
+        except ImportError:
+            pytest.skip("insightface not importable in this environment")
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("forced SCRFD unavailable")
+
+        monkeypatch.setattr(ia, "FaceAnalysis", _boom)
+
+        buffer = io.StringIO()
+        sink_id = loguru_logger.add(buffer, level="WARNING")
+        try:
+            detector = FaceDetector(backend="scrfd")
+        finally:
+            loguru_logger.remove(sink_id)
+
+        # Fell back to Haar...
+        assert detector.backend == "opencv"
+        # ...with a loud, explicit degradation warning (not silent).
+        logs = buffer.getvalue()
+        assert "DEGRADED" in logs and "OpenCV" in logs
+        # ...and the fallback detector is still functional.
+        blank = np.zeros((200, 200, 3), dtype=np.uint8)
+        assert isinstance(detector.detect(blank), list)
+
 
 class TestFaceAligner:
     """Test face alignment functionality."""
@@ -55,9 +89,9 @@ class TestFaceAligner:
         """Aligned face should have correct output shape."""
         aligner = FaceAligner(output_size=(112, 112))
         image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-        landmarks = np.array([
-            [200, 200], [400, 200], [300, 300], [220, 380], [380, 380]
-        ], dtype=np.float32)
+        landmarks = np.array(
+            [[200, 200], [400, 200], [300, 300], [220, 380], [380, 380]], dtype=np.float32
+        )
 
         aligned = aligner.align(image, landmarks)
         assert aligned.shape == (112, 112, 3)
