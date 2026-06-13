@@ -130,16 +130,16 @@ class TestLivenessFusionGate:
 class TestMiniFASAnalyzer:
     """Test MiniFASNet-based anti-spoofing."""
 
-    def test_init_no_models(self):
+    def test_init_no_models(self, tmp_path):
         """Should initialize gracefully without model files."""
-        analyzer = MiniFASAnalyzer()
+        analyzer = MiniFASAnalyzer(model_dir=tmp_path)
         assert not analyzer.models_loaded
         assert analyzer._model_v2 is None
         assert analyzer._model_v1se is None
 
-    def test_analyze_no_models(self):
+    def test_analyze_no_models(self, tmp_path):
         """Without models, should return neutral result."""
-        analyzer = MiniFASAnalyzer()
+        analyzer = MiniFASAnalyzer(model_dir=tmp_path)
         img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
         bbox = (100, 50, 200, 300)
         result = analyzer.analyze(img, bbox)
@@ -156,8 +156,10 @@ class TestMiniFASAnalyzer:
         tensor = MiniFASAnalyzer.preprocess(img, bbox, scale=2.7)
         assert tensor.shape == (1, 3, 80, 80)
         assert tensor.dtype == np.float32
-        assert tensor.min() >= -1.01
-        assert tensor.max() <= 1.01
+        # Reference to_tensor keeps raw [0,255] BGR pixels (the .div(255) is
+        # commented out upstream); the pretrained weights require this range.
+        assert tensor.min() >= 0.0
+        assert tensor.max() <= 255.0
 
     def test_preprocess_different_scales(self):
         """Scale 2.7 and 4.0 should produce different crops."""

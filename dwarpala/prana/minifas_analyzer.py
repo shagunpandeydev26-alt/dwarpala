@@ -5,17 +5,24 @@ Integrates MiniFASNetV2 and MiniFASNetV1SE (from Minivision's
 Silent-Face-Anti-Spoofing) as a passive liveness signal alongside
 texture, temporal, and rPPG analyzers.
 
-MiniFASNet is a lightweight CNN (~600KB) that detects spoof attacks
+MiniFASNet is a lightweight CNN (~1.8MB) that detects spoof attacks
 by analyzing face texture at two different crop scales:
-  - Scale 2.7 → MiniFASNetV2 (80×80 crop)
+  - Scale 2.7 → MiniFASNetV2  (80×80 crop, no SE)
   - Scale 4.0 → MiniFASNetV1SE (80×80 crop, with SE blocks)
 
 Reference:
   - https://github.com/minivision-ai/Silent-Face-Anti-Spoofing
   - License: Apache-2.0
 
-IMPORTANT: MiniFASNet expects its OWN crop (scaled around the face bbox,
-resized to 80×80), NOT the 112×112 ArcFace-aligned crop used by Swarupa.
+This module is a faithful port of the reference architecture
+(src/model_lib/MiniFASNet.py), preprocessing (CropImage in
+src/generate_patches.py), and inference transform (ToTensor only,
+BGR preserved) so that the published pretrained weights produce the
+same outputs they do in the original repo.
+
+IMPORTANT: MiniFASNet expects its OWN crop (the reference CropImage
+bbox-scaled crop resized to 80×80), NOT the 112×112 ArcFace-aligned
+crop used by Swarupa.
 """
 
 import numpy as np
@@ -28,6 +35,25 @@ from dwarpala.utils.logger import get_logger
 from dwarpala.utils.model_manager import ModelManager
 
 logger = get_logger("prana.minifas")
+
+
+# ── Reference channel configs (keep_dict from minivision MiniFASNet.py) ──
+# V2  (2.7_80x80_MiniFASNetV2.pth)   → MiniFASNet   with keep '1.8M_'
+# V1SE(4_0_0_80x80_MiniFASNetV1SE.pth)→ MiniFASNetSE with keep '1.8M'
+_KEEP_DICT = {
+    "1.8M": [32, 32, 103, 103, 64, 13, 13, 64, 26, 26,
+             64, 13, 13, 64, 52, 52, 64, 231, 231, 128,
+             154, 154, 128, 52, 52, 128, 26, 26, 128, 52,
+             52, 128, 26, 26, 128, 26, 26, 128, 308, 308,
+             128, 26, 26, 128, 26, 26, 128, 512, 512],
+    "1.8M_": [32, 32, 103, 103, 64, 13, 13, 64, 13, 13, 64, 13,
+              13, 64, 13, 13, 64, 231, 231, 128, 231, 231, 128, 52,
+              52, 128, 26, 26, 128, 77, 77, 128, 26, 26, 128, 26, 26,
+              128, 308, 308, 128, 26, 26, 128, 26, 26, 128, 512, 512],
+}
+
+# get_kernel(80, 80) = ((80+15)//16, (80+15)//16) = (5, 5)
+_CONV6_KERNEL = (5, 5)
 
 
 @dataclass
@@ -49,141 +75,260 @@ class MiniFASResult:
 
 def _build_minifas_model(arch: str):
     """
-    Build a MiniFASNet PyTorch model and load pretrained weights.
-    Uses PyTorch's nn.Module for correct, fast inference.
+    Build a MiniFASNet model as a faithful port of the minivision reference
+    (src/model_lib/MiniFASNet.py). Module structure and names match the
+    pretrained state dict exactly, so weights load with strict=True.
 
     Args:
-        arch: 'V2' for MiniFASNetV2 or 'V1SE' for MiniFASNetV1SE.
+        arch: 'V2' for MiniFASNetV2 (no SE) or 'V1SE' for MiniFASNetV1SE.
 
     Returns:
-        A loaded torch.nn.Module in eval mode, or None if torch unavailable.
+        A torch.nn.Module (not yet loaded; weights applied separately).
     """
     import torch
-    import torch.nn as nn
+    from torch.nn import (
+        Linear, Conv2d, BatchNorm1d, BatchNorm2d, PReLU, ReLU, Sigmoid,
+        AdaptiveAvgPool2d, Sequential, Module, Dropout,
+    )
 
-    class ConvBNReLU(nn.Module):
-        def __init__(self, in_c, out_c, k=3, s=1, p=1):
+    class Flatten(Module):
+        def forward(self, x):
+            return x.view(x.size(0), -1)
+
+    class Conv_block(Module):
+        def __init__(self, in_c, out_c, kernel=(1, 1), stride=(1, 1),
+                     padding=(0, 0), groups=1):
             super().__init__()
-            self.conv = nn.Conv2d(in_c, out_c, k, s, p, bias=False)
-            self.bn = nn.BatchNorm2d(out_c)
-            self.relu = nn.ReLU(inplace=True)
+            self.conv = Conv2d(in_c, out_c, kernel_size=kernel, groups=groups,
+                               stride=stride, padding=padding, bias=False)
+            self.bn = BatchNorm2d(out_c)
+            self.prelu = PReLU(out_c)
 
         def forward(self, x):
-            return self.relu(self.bn(self.conv(x)))
+            return self.prelu(self.bn(self.conv(x)))
 
-    class LinearBlock(nn.Module):
-        def __init__(self, in_c, out_c):
+    class Linear_block(Module):
+        """Conv + BN, NO activation (minivision 'Linear_block')."""
+        def __init__(self, in_c, out_c, kernel=(1, 1), stride=(1, 1),
+                     padding=(0, 0), groups=1):
             super().__init__()
-            self.depthwise = nn.Conv2d(in_c, in_c, 3, 1, 1, groups=in_c, bias=False)
-            self.pointwise = nn.Conv2d(in_c, out_c, 1, 1, 0, bias=False)
-            self.bn = nn.BatchNorm2d(out_c)
-            self.relu = nn.ReLU(inplace=True)
+            self.conv = Conv2d(in_c, out_c, kernel_size=kernel, groups=groups,
+                               stride=stride, padding=padding, bias=False)
+            self.bn = BatchNorm2d(out_c)
 
         def forward(self, x):
-            return self.relu(self.bn(self.pointwise(self.depthwise(x))))
+            return self.bn(self.conv(x))
 
-    class SELayer(nn.Module):
-        def __init__(self, in_c, reduction=4):
+    class Depth_Wise(Module):
+        def __init__(self, c1, c2, c3, residual=False, kernel=(3, 3),
+                     stride=(2, 2), padding=(1, 1), groups=1):
             super().__init__()
-            self.avg_pool = nn.AdaptiveAvgPool2d(1)
-            self.fc1 = nn.Linear(in_c, max(in_c // reduction, 1))
-            self.relu = nn.ReLU(inplace=True)
-            self.fc2 = nn.Linear(max(in_c // reduction, 1), in_c)
-            self.sigmoid = nn.Sigmoid()
+            c1_in, c1_out = c1
+            c2_in, c2_out = c2
+            c3_in, c3_out = c3
+            self.conv = Conv_block(c1_in, c1_out, kernel=(1, 1),
+                                   padding=(0, 0), stride=(1, 1))
+            self.conv_dw = Conv_block(c2_in, c2_out, groups=c2_in, kernel=kernel,
+                                      padding=padding, stride=stride)
+            self.project = Linear_block(c3_in, c3_out, kernel=(1, 1),
+                                        padding=(0, 0), stride=(1, 1))
+            self.residual = residual
 
         def forward(self, x):
-            b, c, _, _ = x.size()
-            y = self.avg_pool(x).view(b, c)
-            y = self.fc1(y)
-            y = self.relu(y)
-            y = self.fc2(y)
-            y = self.sigmoid(y).view(b, c, 1, 1)
-            return x * y
+            short_cut = x if self.residual else None
+            x = self.conv(x)
+            x = self.conv_dw(x)
+            x = self.project(x)
+            return short_cut + x if self.residual else x
 
-    class MiniFASNetV2(nn.Module):
-        def __init__(self):
+    class SEModule(Module):
+        def __init__(self, channels, reduction):
             super().__init__()
-            self.conv1 = ConvBNReLU(3, 32, 3, 1, 1)
-            self.pool1 = nn.MaxPool2d(2, 2)
-            self.conv2 = ConvBNReLU(32, 64, 3, 1, 1)
-            self.pool2 = nn.MaxPool2d(2, 2)
-            self.conv3 = ConvBNReLU(64, 128, 3, 1, 1)
-            self.pool3 = nn.MaxPool2d(2, 2)
-            self.conv4 = ConvBNReLU(128, 128, 3, 1, 1)
-            self.pool4 = nn.MaxPool2d(2, 2)
-            self.conv5 = ConvBNReLU(128, 64, 3, 1, 1)
-            self.pool5 = nn.MaxPool2d(2, 2)
-            self.linear1 = LinearBlock(64, 64)
-            self.linear2 = LinearBlock(64, 64)
-            self.avgpool = nn.AdaptiveAvgPool2d(1)
-            self.flatten = nn.Flatten()
-            self.dropout = nn.Dropout(0.5)
-            self.fc = nn.Linear(64, 2)
+            self.avg_pool = AdaptiveAvgPool2d(1)
+            self.fc1 = Conv2d(channels, channels // reduction, kernel_size=1,
+                              padding=0, bias=False)
+            self.bn1 = BatchNorm2d(channels // reduction)
+            self.relu = ReLU(inplace=True)
+            self.fc2 = Conv2d(channels // reduction, channels, kernel_size=1,
+                              padding=0, bias=False)
+            self.bn2 = BatchNorm2d(channels)
+            self.sigmoid = Sigmoid()
 
         def forward(self, x):
-            x = self.pool1(self.conv1(x))
-            x = self.pool2(self.conv2(x))
-            x = self.pool3(self.conv3(x))
-            x = self.pool4(self.conv4(x))
-            x = self.pool5(self.conv5(x))
-            x = self.linear1(x)
-            x = self.linear2(x)
-            x = self.avgpool(x)
-            x = self.flatten(x)
-            x = self.dropout(x)
-            return self.fc(x)
+            module_input = x
+            x = self.avg_pool(x)
+            x = self.fc1(x)
+            x = self.bn1(x)
+            x = self.relu(x)
+            x = self.fc2(x)
+            x = self.bn2(x)
+            x = self.sigmoid(x)
+            return module_input * x
 
-    class MiniFASNetV1SE(nn.Module):
-        def __init__(self):
+    class Depth_Wise_SE(Module):
+        def __init__(self, c1, c2, c3, residual=False, kernel=(3, 3),
+                     stride=(2, 2), padding=(1, 1), groups=1, se_reduct=8):
             super().__init__()
-            self.conv1 = ConvBNReLU(3, 32, 3, 1, 1)
-            self.pool1 = nn.MaxPool2d(2, 2)
-            self.se1 = SELayer(32)
-            self.conv2 = ConvBNReLU(32, 64, 3, 1, 1)
-            self.pool2 = nn.MaxPool2d(2, 2)
-            self.se2 = SELayer(64)
-            self.conv3 = ConvBNReLU(64, 128, 3, 1, 1)
-            self.pool3 = nn.MaxPool2d(2, 2)
-            self.se3 = SELayer(128)
-            self.conv4 = ConvBNReLU(128, 128, 3, 1, 1)
-            self.pool4 = nn.MaxPool2d(2, 2)
-            self.se4 = SELayer(128)
-            self.conv5 = ConvBNReLU(128, 64, 3, 1, 1)
-            self.pool5 = nn.MaxPool2d(2, 2)
-            self.se5 = SELayer(64)
-            self.linear1 = LinearBlock(64, 64)
-            self.se6 = SELayer(64)
-            self.linear2 = LinearBlock(64, 64)
-            self.se7 = SELayer(64)
-            self.avgpool = nn.AdaptiveAvgPool2d(1)
-            self.flatten = nn.Flatten()
-            self.dropout = nn.Dropout(0.5)
-            self.fc = nn.Linear(64, 2)
+            c1_in, c1_out = c1
+            c2_in, c2_out = c2
+            c3_in, c3_out = c3
+            self.conv = Conv_block(c1_in, c1_out, kernel=(1, 1),
+                                   padding=(0, 0), stride=(1, 1))
+            self.conv_dw = Conv_block(c2_in, c2_out, groups=c2_in, kernel=kernel,
+                                      padding=padding, stride=stride)
+            self.project = Linear_block(c3_in, c3_out, kernel=(1, 1),
+                                        padding=(0, 0), stride=(1, 1))
+            self.residual = residual
+            self.se_module = SEModule(c3_out, se_reduct)
 
         def forward(self, x):
-            x = self.pool1(self.conv1(x))
-            x = self.se1(x)
-            x = self.pool2(self.conv2(x))
-            x = self.se2(x)
-            x = self.pool3(self.conv3(x))
-            x = self.se3(x)
-            x = self.pool4(self.conv4(x))
-            x = self.se4(x)
-            x = self.pool5(self.conv5(x))
-            x = self.se5(x)
-            x = self.linear1(x)
-            x = self.se6(x)
-            x = self.linear2(x)
-            x = self.se7(x)
-            x = self.avgpool(x)
-            x = self.flatten(x)
-            x = self.dropout(x)
-            return self.fc(x)
+            short_cut = x if self.residual else None
+            x = self.conv(x)
+            x = self.conv_dw(x)
+            x = self.project(x)
+            if self.residual:
+                x = self.se_module(x)
+                return short_cut + x
+            return x
 
-    model_map = {"V2": MiniFASNetV2, "V1SE": MiniFASNetV1SE}
-    if arch not in model_map:
-        raise ValueError(f"Unknown MiniFASNet architecture: {arch}")
-    return model_map[arch]()
+    class Residual(Module):
+        def __init__(self, c1, c2, c3, num_block, groups, kernel=(3, 3),
+                     stride=(1, 1), padding=(1, 1)):
+            super().__init__()
+            modules = []
+            for i in range(num_block):
+                modules.append(Depth_Wise(
+                    c1[i], c2[i], c3[i], residual=True, kernel=kernel,
+                    padding=padding, stride=stride, groups=groups))
+            self.model = Sequential(*modules)
+
+        def forward(self, x):
+            return self.model(x)
+
+    class ResidualSE(Module):
+        def __init__(self, c1, c2, c3, num_block, groups, kernel=(3, 3),
+                     stride=(1, 1), padding=(1, 1), se_reduct=4):
+            super().__init__()
+            modules = []
+            for i in range(num_block):
+                if i == num_block - 1:
+                    modules.append(Depth_Wise_SE(
+                        c1[i], c2[i], c3[i], residual=True, kernel=kernel,
+                        padding=padding, stride=stride, groups=groups,
+                        se_reduct=se_reduct))
+                else:
+                    modules.append(Depth_Wise(
+                        c1[i], c2[i], c3[i], residual=True, kernel=kernel,
+                        padding=padding, stride=stride, groups=groups))
+            self.model = Sequential(*modules)
+
+        def forward(self, x):
+            return self.model(x)
+
+    class MiniFASNet(Module):
+        def __init__(self, keep, embedding_size=128, conv6_kernel=(5, 5),
+                     drop_p=0.2, num_classes=3, img_channel=3, use_se=False):
+            super().__init__()
+            self.embedding_size = embedding_size
+            res_cls = ResidualSE if use_se else Residual
+
+            self.conv1 = Conv_block(img_channel, keep[0], kernel=(3, 3),
+                                    stride=(2, 2), padding=(1, 1))
+            self.conv2_dw = Conv_block(keep[0], keep[1], kernel=(3, 3),
+                                       stride=(1, 1), padding=(1, 1),
+                                       groups=keep[1])
+
+            self.conv_23 = Depth_Wise(
+                (keep[1], keep[2]), (keep[2], keep[3]), (keep[3], keep[4]),
+                kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=keep[3])
+
+            c1 = [(keep[4], keep[5]), (keep[7], keep[8]),
+                  (keep[10], keep[11]), (keep[13], keep[14])]
+            c2 = [(keep[5], keep[6]), (keep[8], keep[9]),
+                  (keep[11], keep[12]), (keep[14], keep[15])]
+            c3 = [(keep[6], keep[7]), (keep[9], keep[10]),
+                  (keep[12], keep[13]), (keep[15], keep[16])]
+            self.conv_3 = res_cls(c1, c2, c3, num_block=4, groups=keep[4],
+                                  kernel=(3, 3), stride=(1, 1), padding=(1, 1))
+
+            self.conv_34 = Depth_Wise(
+                (keep[16], keep[17]), (keep[17], keep[18]), (keep[18], keep[19]),
+                kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=keep[19])
+
+            c1 = [(keep[19], keep[20]), (keep[22], keep[23]), (keep[25], keep[26]),
+                  (keep[28], keep[29]), (keep[31], keep[32]), (keep[34], keep[35])]
+            c2 = [(keep[20], keep[21]), (keep[23], keep[24]), (keep[26], keep[27]),
+                  (keep[29], keep[30]), (keep[32], keep[33]), (keep[35], keep[36])]
+            c3 = [(keep[21], keep[22]), (keep[24], keep[25]), (keep[27], keep[28]),
+                  (keep[30], keep[31]), (keep[33], keep[34]), (keep[36], keep[37])]
+            self.conv_4 = res_cls(c1, c2, c3, num_block=6, groups=keep[19],
+                                  kernel=(3, 3), stride=(1, 1), padding=(1, 1))
+
+            self.conv_45 = Depth_Wise(
+                (keep[37], keep[38]), (keep[38], keep[39]), (keep[39], keep[40]),
+                kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=keep[40])
+
+            c1 = [(keep[40], keep[41]), (keep[43], keep[44])]
+            c2 = [(keep[41], keep[42]), (keep[44], keep[45])]
+            c3 = [(keep[42], keep[43]), (keep[45], keep[46])]
+            self.conv_5 = res_cls(c1, c2, c3, num_block=2, groups=keep[40],
+                                  kernel=(3, 3), stride=(1, 1), padding=(1, 1))
+
+            self.conv_6_sep = Conv_block(keep[46], keep[47], kernel=(1, 1),
+                                         stride=(1, 1), padding=(0, 0))
+            self.conv_6_dw = Linear_block(keep[47], keep[48], groups=keep[48],
+                                          kernel=conv6_kernel, stride=(1, 1),
+                                          padding=(0, 0))
+            self.conv_6_flatten = Flatten()
+            self.linear = Linear(512, embedding_size, bias=False)
+            self.bn = BatchNorm1d(embedding_size)
+            self.drop = Dropout(p=drop_p)
+            self.prob = Linear(embedding_size, num_classes, bias=False)
+
+        def forward(self, x):
+            out = self.conv1(x)
+            out = self.conv2_dw(out)
+            out = self.conv_23(out)
+            out = self.conv_3(out)
+            out = self.conv_34(out)
+            out = self.conv_4(out)
+            out = self.conv_45(out)
+            out = self.conv_5(out)
+            out = self.conv_6_sep(out)
+            out = self.conv_6_dw(out)
+            out = self.conv_6_flatten(out)
+            if self.embedding_size != 512:
+                out = self.linear(out)
+            out = self.bn(out)
+            out = self.drop(out)
+            out = self.prob(out)
+            return out
+
+    if arch == "V2":
+        return MiniFASNet(_KEEP_DICT["1.8M_"], conv6_kernel=_CONV6_KERNEL,
+                          drop_p=0.2, num_classes=3, use_se=False)
+    elif arch == "V1SE":
+        return MiniFASNet(_KEEP_DICT["1.8M"], conv6_kernel=_CONV6_KERNEL,
+                          drop_p=0.75, num_classes=3, use_se=True)
+    raise ValueError(f"Unknown arch: {arch}")
+
+
+def _load_minifas_weights(model, path: Path):
+    """
+    Load the pretrained state dict. The reference saves with a 'module.'
+    prefix (DataParallel); strip it. Module names otherwise match exactly,
+    so we load with strict=True and surface any mismatch loudly.
+    """
+    import torch
+
+    state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
+
+    first_key = next(iter(state_dict))
+    if first_key.startswith("module."):
+        state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict, strict=True)
+    return model
 
 
 class MiniFASAnalyzer:
@@ -193,13 +338,14 @@ class MiniFASAnalyzer:
     Loads both MiniFASNetV2 (scale 2.7) and MiniFASNetV1SE (scale 4.0)
     pretrained models and fuses their predictions.
 
-    IMPORTANT: Uses its OWN crop from the original image (scaled around
-    the face bounding box, resized to 80×80). Does NOT use the
-    112×112 ArcFace-aligned crop used by Swarupa.
+    IMPORTANT: Uses the reference CropImage crop from the original image
+    (bbox scaled and shifted to stay in-frame, resized to 80×80). Does NOT
+    use the 112×112 ArcFace-aligned crop used by Swarupa.
 
-    Usage:
-        analyzer = MiniFASAnalyzer()
-        result = analyzer.analyze(original_image_rgb, face_bbox)
+    The model outputs 3-class logits. Index 1 = live (real); indices 0 and 2
+    are spoof types. The liveness score is the softmax probability of class 1,
+    averaged across the two models (equivalent to the reference pipeline,
+    which sums the two softmax vectors and reads class 1).
     """
 
     INPUT_SIZE = 80
@@ -228,16 +374,16 @@ class MiniFASAnalyzer:
             except FileNotFoundError:
                 v1se_path = None
 
-        self.v2_path = v2_path
-        self.v1se_path = v1se_path
-
         import torch
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if v2_path and v2_path.exists():
             try:
-                self._model_v2 = self._load_model(v2_path, "V2")
+                model = _build_minifas_model("V2")
+                self._model_v2 = _load_minifas_weights(model, v2_path)
+                self._model_v2.to(self.device)
+                self._model_v2.eval()
                 logger.info(f"Loaded MiniFASNetV2 from {v2_path}")
                 self._models_loaded = True
             except Exception as e:
@@ -248,7 +394,10 @@ class MiniFASAnalyzer:
 
         if v1se_path and v1se_path.exists():
             try:
-                self._model_v1se = self._load_model(v1se_path, "V1SE")
+                model = _build_minifas_model("V1SE")
+                self._model_v1se = _load_minifas_weights(model, v1se_path)
+                self._model_v1se.to(self.device)
+                self._model_v1se.eval()
                 logger.info(f"Loaded MiniFASNetV1SE from {v1se_path}")
                 self._models_loaded = True
             except Exception as e:
@@ -269,56 +418,75 @@ class MiniFASAnalyzer:
                 "Run 'dwarpala download-models' to download MiniFASNet weights."
             )
 
-    def _load_model(self, path: Path, arch: str):
-        """Load a .pth state dict into a PyTorch model."""
-        import torch
+    @staticmethod
+    def _get_new_box(src_w: int, src_h: int,
+                     bbox: Tuple[int, int, int, int], scale: float):
+        """
+        Reference CropImage._get_new_box: clamp the scale so the enlarged box
+        fits the image, then SHIFT (not clip) any out-of-bounds edge inward so
+        the crop keeps its full requested size.
+        """
+        x, y, box_w, box_h = bbox
+        scale = min((src_h - 1) / box_h, min((src_w - 1) / box_w, scale))
 
-        model = _build_minifas_model(arch)
-        state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
-        model.load_state_dict(state_dict)
-        model.to(self.device)
-        model.eval()
-        return model
+        new_width = box_w * scale
+        new_height = box_h * scale
+        center_x, center_y = box_w / 2 + x, box_h / 2 + y
+
+        left_top_x = center_x - new_width / 2
+        left_top_y = center_y - new_height / 2
+        right_bottom_x = center_x + new_width / 2
+        right_bottom_y = center_y + new_height / 2
+
+        if left_top_x < 0:
+            right_bottom_x -= left_top_x
+            left_top_x = 0
+        if left_top_y < 0:
+            right_bottom_y -= left_top_y
+            left_top_y = 0
+        if right_bottom_x > src_w - 1:
+            left_top_x -= right_bottom_x - src_w + 1
+            right_bottom_x = src_w - 1
+        if right_bottom_y > src_h - 1:
+            left_top_y -= right_bottom_y - src_h + 1
+            right_bottom_y = src_h - 1
+
+        return (int(left_top_x), int(left_top_y),
+                int(right_bottom_x), int(right_bottom_y))
 
     @staticmethod
     def preprocess(original_image: np.ndarray, bbox: Tuple[int, int, int, int],
                    scale: float, input_size: int = 80) -> np.ndarray:
         """
-        Preprocess face crop for MiniFASNet inference.
+        Preprocess a face crop for MiniFASNet inference, matching the
+        reference exactly: CropImage bbox-scaled crop (BGR) → resize 80×80
+        → channels-first float32 in [0, 255].
+
+        The reference transform (src/data_io/functional.py::to_tensor) has the
+        `.div(255)` deliberately commented out — the pretrained weights expect
+        RAW [0,255] BGR pixels with NO normalization and NO BGR→RGB swap.
+        Dividing by 255 (or applying (x-127.5)/128) collapses every activation
+        and makes the 3-class head saturate to one class for all inputs.
 
         Args:
-            original_image: Full image (H, W, 3) in RGB.
+            original_image: Full image (H, W, 3) in BGR (OpenCV default).
             bbox: (x, y, w, h) face bounding box.
             scale: Bbox enlargement factor (2.7 for V2, 4.0 for V1SE).
             input_size: Target crop size (default 80).
 
         Returns:
-            Preprocessed crop as (1, 3, input_size, input_size) float32
-            normalized to [-1, 1].
+            Preprocessed crop as (1, 3, input_size, input_size) float32 in [0, 255].
         """
-        x, y, w, h = bbox
-        cx, cy = x + w // 2, y + h // 2
-        new_w = int(w * scale)
-        new_h = int(h * scale)
+        src_h, src_w = original_image.shape[:2]
+        x1, y1, x2, y2 = MiniFASAnalyzer._get_new_box(src_w, src_h, bbox, scale)
 
-        x1 = max(0, cx - new_w // 2)
-        y1 = max(0, cy - new_h // 2)
-        x2 = min(original_image.shape[1], cx + new_w // 2)
-        y2 = min(original_image.shape[0], cy + new_h // 2)
-
-        if x2 <= x1 or y2 <= y1:
-            x1, y1 = x, y
-            x2 = min(original_image.shape[1], x + w)
-            y2 = min(original_image.shape[0], y + h)
-
-        crop = original_image[y1:y2, x1:x2]
+        crop = original_image[y1:y2 + 1, x1:x2 + 1]
         if crop.size == 0:
             raise ValueError("Empty crop — bbox out of image bounds")
 
-        crop = cv2.resize(crop, (input_size, input_size),
-                         interpolation=cv2.INTER_LINEAR)
-        crop = crop.astype(np.float32) / 255.0
-        crop = (crop - 0.5) * 2.0
+        crop = cv2.resize(crop, (input_size, input_size))
+        # Reference to_tensor: HWC [0,255] BGR → CHW float32, NO /255, NO swap.
+        crop = crop.astype(np.float32)
         crop = np.transpose(crop, (2, 0, 1))
         crop = np.expand_dims(crop, axis=0)
         return crop
@@ -331,8 +499,12 @@ class MiniFASAnalyzer:
         """
         Run MiniFASNet anti-spoofing analysis.
 
+        Runs both V2 (scale 2.7) and V1SE (scale 4.0) on 80×80 crops and
+        returns the class-1 (live) softmax probability, averaged across the
+        two models (the reference minivision fusion).
+
         Args:
-            original_image: Full image (H, W, 3) in RGB.
+            original_image: Full image (H, W, 3) in BGR.
             bbox: (x, y, w, h) face bounding box.
 
         Returns:
@@ -389,5 +561,4 @@ class MiniFASAnalyzer:
 
     @property
     def models_loaded(self) -> bool:
-        """Whether any models were loaded successfully."""
         return self._models_loaded

@@ -36,17 +36,17 @@ MODEL_REGISTRY: Dict[str, dict] = {
         "license": "Non-commercial research only (InsightFace license)",
     },
     "minifas_v2_2_7": {
-        "url": "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/raw/master/images/2.7_80x80_MiniFASNetV2.pth",
+        "url": "https://raw.githubusercontent.com/minivision-ai/Silent-Face-Anti-Spoofing/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.pth",
         "sha256": None,
         "filename": "2.7_80x80_MiniFASNetV2.pth",
-        "description": "MiniFASNetV2 anti-spoofing model (scale 2.7, 80×80) — ~600KB",
+        "description": "MiniFASNetV2 anti-spoofing model (scale 2.7, 80×80) — ~1.8MB",
         "license": "Apache-2.0 (Silent-Face-Anti-Spoofing)",
     },
     "minifas_v1se_4_0": {
-        "url": "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/raw/master/images/4_0_0_80x80_MiniFASNetV1SE.pth",
+        "url": "https://raw.githubusercontent.com/minivision-ai/Silent-Face-Anti-Spoofing/master/resources/anti_spoof_models/4_0_0_80x80_MiniFASNetV1SE.pth",
         "sha256": None,
         "filename": "4_0_0_80x80_MiniFASNetV1SE.pth",
-        "description": "MiniFASNetV1SE anti-spoofing model (scale 4.0, 80×80) — ~600KB",
+        "description": "MiniFASNetV1SE anti-spoofing model (scale 4.0, 80×80) — ~1.8MB",
         "license": "Apache-2.0 (Silent-Face-Anti-Spoofing)",
     },
 }
