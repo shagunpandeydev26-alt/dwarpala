@@ -36,6 +36,18 @@ class QualityReport:
             + (f" | Issues: {', '.join(self.issues)}" if self.issues else "")
         )
 
+    def to_dict(self) -> dict:
+        """JSON-serializable view of the quality report (for API responses)."""
+        return {
+            "is_acceptable": bool(self.is_acceptable),
+            "blur_score": round(float(self.blur_score), 2),
+            "brightness": round(float(self.brightness), 1),
+            "face_width": int(self.face_width),
+            "face_height": int(self.face_height),
+            "landmark_confidence": round(float(self.landmark_confidence), 3),
+            "issues": list(self.issues),
+        }
+
 
 class QualityAssessor:
     """
@@ -162,7 +174,7 @@ class QualityAssessor:
         (could indicate sunglasses, mask, hand covering face).
         """
         h, w = face_image.shape[:2]
-        if image_ndim := face_image.ndim == 3:
+        if face_image.ndim == 3:
             gray = cv2.cvtColor(face_image, cv2.COLOR_RGB2GRAY)
         else:
             gray = face_image

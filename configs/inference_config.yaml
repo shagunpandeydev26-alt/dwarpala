@@ -55,3 +55,16 @@ decision:
   match_threshold: 0.40              # Face similarity threshold
   liveness_threshold: 0.5            # Liveness score threshold
   review_band: 0.1                   # If within this band of threshold → MANUAL_REVIEW
+
+# REST API server (Phase 3). Any value here is overridable by env vars:
+#   DWARPALA_HOST, DWARPALA_PORT, DWARPALA_MAX_UPLOAD_MB,
+#   DWARPALA_CORS_ORIGINS (comma-separated), AUDIT_LOG, DWARPALA_AUDIT_DB
+api:
+  host: "0.0.0.0"
+  port: 8000
+  max_upload_mb: 15                  # Per-file upload cap → 413 on exceed
+  # CORS: permissive ("*") for local dev ONLY. MUST be locked to explicit
+  # origins for any real/public deployment.
+  cors_origins: ["*"]
+  audit_log: "off"                   # "off" | "sqlite"
+  audit_db: "audit.db"               # sqlite path when audit_log == "sqlite"
