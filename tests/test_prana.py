@@ -8,7 +8,8 @@ import pytest
 from dwarpala.prana.texture_analyzer import TextureAnalyzer
 from dwarpala.prana.temporal_analyzer import TemporalAnalyzer
 from dwarpala.prana.rppg_analyzer import RPPGAnalyzer
-from dwarpala.prana.fusion_gate import LivenessFusionGate
+from dwarpala.prana.fusion_gate import LivenessFusionGate, DEFAULT_FUSION_WEIGHTS
+from dwarpala.prana.minifas_analyzer import MiniFASAnalyzer, MiniFASResult
 
 
 class TestTextureAnalyzer:
@@ -119,8 +120,158 @@ class TestLivenessFusionGate:
             enable_rppg=False,
         )
         face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
-        verdict = gate.analyze(face)
+        verdict = gate.analyze(face_image=face)
         assert verdict.score >= 0
         assert verdict.texture_result is not None
         assert verdict.temporal_result is None
         assert verdict.rppg_result is None
+
+
+class TestMiniFASAnalyzer:
+    """Test MiniFASNet-based anti-spoofing."""
+
+    def test_init_no_models(self):
+        """Should initialize gracefully without model files."""
+        analyzer = MiniFASAnalyzer()
+        assert not analyzer.models_loaded
+        assert analyzer._model_v2 is None
+        assert analyzer._model_v1se is None
+
+    def test_analyze_no_models(self):
+        """Without models, should return neutral result."""
+        analyzer = MiniFASAnalyzer()
+        img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        bbox = (100, 50, 200, 300)
+        result = analyzer.analyze(img, bbox)
+        assert isinstance(result, MiniFASResult)
+        assert result.score == 0.5
+        assert result.prediction == "uncertain"
+        assert result.v2_score == 0.5
+        assert result.v1se_score == 0.5
+
+    def test_preprocess(self):
+        """Test MiniFASNet preprocessing produces correct shape."""
+        img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        bbox = (200, 150, 100, 120)
+        tensor = MiniFASAnalyzer.preprocess(img, bbox, scale=2.7)
+        assert tensor.shape == (1, 3, 80, 80)
+        assert tensor.dtype == np.float32
+        assert tensor.min() >= -1.01
+        assert tensor.max() <= 1.01
+
+    def test_preprocess_different_scales(self):
+        """Scale 2.7 and 4.0 should produce different crops."""
+        img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        bbox = (200, 150, 100, 120)
+        t1 = MiniFASAnalyzer.preprocess(img, bbox, scale=2.7)
+        t2 = MiniFASAnalyzer.preprocess(img, bbox, scale=4.0)
+        assert t1.shape == t2.shape == (1, 3, 80, 80)
+
+    def test_preprocess_bbox_at_edge(self):
+        """Should handle bboxes near image edges without cropping errors."""
+        img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        bbox = (0, 0, 50, 50)
+        tensor = MiniFASAnalyzer.preprocess(img, bbox, scale=2.7)
+        assert tensor.shape == (1, 3, 80, 80)
+
+    def test_preprocess_invalid_bbox_fallback(self):
+        """Should fall back to original bbox when scaled crop goes out of bounds."""
+        img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        bbox = (0, 0, 10, 10)
+        tensor = MiniFASAnalyzer.preprocess(img, bbox, scale=4.0)
+        assert tensor.shape == (1, 3, 80, 80)
+
+
+class TestFusionGateExtended:
+    """Extended tests for 4-signal fusion gate."""
+
+    def test_default_weights_sum_to_one(self):
+        """Default fusion weights must sum to 1.0."""
+        total = sum(DEFAULT_FUSION_WEIGHTS.values())
+        assert abs(total - 1.0) < 1e-6
+
+    def test_single_image_mode(self):
+        """Single image (no video) should skip temporal and rPPG."""
+        gate = LivenessFusionGate(
+            enable_texture=True,
+            enable_temporal=True,
+            enable_rppg=True,
+            enable_minifas=False,
+        )
+        face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+        verdict = gate.analyze(face_image=face, video_frames=None)
+        assert verdict.texture_result is not None
+        assert verdict.temporal_result is None
+        assert verdict.rppg_result is None
+        assert verdict.method_used == "single_image"
+        assert verdict.signal_status["temporal"] == "NOT_APPLICABLE"
+        assert verdict.signal_status["rppg"] == "NOT_APPLICABLE"
+
+    def test_video_mode_includes_temporal(self):
+        """With video frames, temporal should run."""
+        gate = LivenessFusionGate(
+            enable_texture=True,
+            enable_temporal=True,
+            enable_rppg=False,
+            enable_minifas=False,
+        )
+        face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+        frames = [np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+                  for _ in range(30)]
+        verdict = gate.analyze(face_image=face, video_frames=frames)
+        assert verdict.method_used == "full"
+        assert verdict.signal_status.get("temporal") in ("OK", "FAILED")
+
+    def test_minifas_in_verdict(self):
+        """MiniFASNet result should be present in verdict."""
+        gate = LivenessFusionGate(
+            enable_texture=False,
+            enable_temporal=False,
+            enable_rppg=False,
+            enable_minifas=True,
+        )
+        face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+        verdict = gate.analyze(
+            face_image=face,
+            original_image=face,
+            bbox=(10, 10, 50, 50),
+        )
+        assert verdict.minifas_result is not None
+
+    def test_not_applicable_renormalization(self):
+        """When some signals are N/A, weights should be renormalized."""
+        gate = LivenessFusionGate(
+            enable_texture=True,
+            enable_temporal=False,
+            enable_rppg=False,
+            enable_minifas=False,
+        )
+        face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+        verdict = gate.analyze(face_image=face)
+        assert verdict.score == verdict.texture_result.score
+
+    def test_single_image_renormalization(self):
+        """Single image mode should renormalize weights."""
+        gate = LivenessFusionGate(
+            enable_texture=True,
+            enable_temporal=True,
+            enable_rppg=True,
+            enable_minifas=False,
+        )
+        face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+        verdict = gate.analyze(face_image=face, video_frames=None)
+        assert verdict.score == verdict.texture_result.score
+
+    def test_verdict_has_signal_status(self):
+        """LivenessVerdict should include signal_status dict."""
+        gate = LivenessFusionGate(
+            enable_texture=True,
+            enable_temporal=False,
+            enable_rppg=False,
+            enable_minifas=False,
+        )
+        face = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)
+        verdict = gate.analyze(face_image=face)
+        assert isinstance(verdict.signal_status, dict)
+        assert "texture" in verdict.signal_status
+        assert verdict.signal_status["texture"] == "OK"

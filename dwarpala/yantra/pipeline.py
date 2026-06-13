@@ -188,6 +188,8 @@ class DwarpalaPipeline:
                 enable_texture=True,
                 enable_temporal=True,
                 enable_rppg=True,
+                enable_minifas=True,
+                model_dir=model_dir,
             )
         else:
             self.liveness = None
@@ -275,8 +277,16 @@ class DwarpalaPipeline:
             # ═══ STEP 6: Liveness Detection (Prana) ═══
             liveness_verdict = None
             if self.enable_liveness and self.liveness is not None:
+                # Compute bbox in (x, y, w, h) format from detection (x1, y1, x2, y2)
+                bbox_xywh = None
+                if selfie_detection.bbox is not None:
+                    x1, y1, x2, y2 = selfie_detection.bbox.astype(int)
+                    bbox_xywh = (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+
                 liveness_verdict = self.liveness.analyze(
                     face_image=selfie_aligned,
+                    original_image=selfie_img,
+                    bbox=bbox_xywh,
                     video_frames=selfie_frames,
                 )
                 details["liveness_score"] = liveness_verdict.score
