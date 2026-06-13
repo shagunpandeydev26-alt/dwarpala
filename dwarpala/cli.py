@@ -3,11 +3,14 @@ Dwarpala command-line interface.
 
 Subcommands:
     serve            Launch the FastAPI REST server (config/env-driven host/port).
+    demo             Launch the Gradio demo UI (config/env-driven host/port).
     download-models  Download required model weights (InsightFace + MiniFASNet).
 
 Examples:
     dwarpala serve
     dwarpala serve --host 127.0.0.1 --port 9000
+    dwarpala demo
+    dwarpala demo --port 7861 --share
     dwarpala download-models
 """
 
@@ -43,6 +46,28 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_demo(args: argparse.Namespace) -> int:
+    """Launch the Gradio demo UI with config/env-driven host/port (CLI flags win)."""
+    from dwarpala.ui.app import build_demo
+    from dwarpala.ui.config import load_demo_settings
+
+    settings = load_demo_settings()
+    if args.host:
+        settings.host = args.host
+    if args.port:
+        settings.port = args.port
+    if args.share:
+        settings.share = True
+
+    demo = build_demo(model_dir=settings.model_dir)
+    logger.info(
+        f"Starting Dwarpala demo on http://{settings.host}:{settings.port} "
+        f"(share={settings.share})"
+    )
+    demo.launch(server_name=settings.host, server_port=settings.port, share=settings.share)
+    return 0
+
+
 def _cmd_download_models(args: argparse.Namespace) -> int:
     """Download all registered model weights with SHA256 logging."""
     from dwarpala.utils.model_manager import ModelManager
@@ -71,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default=None, help="Bind host (overrides config/env).")
     p_serve.add_argument("--port", type=int, default=None, help="Bind port (overrides config/env).")
     p_serve.set_defaults(func=_cmd_serve)
+
+    p_demo = sub.add_parser("demo", help="Launch the Gradio demo UI.")
+    p_demo.add_argument("--host", default=None, help="Bind host (overrides config/env).")
+    p_demo.add_argument("--port", type=int, default=None, help="Bind port (overrides config/env).")
+    p_demo.add_argument(
+        "--share", action="store_true", help="Expose a public gradio.live link (off by default)."
+    )
+    p_demo.set_defaults(func=_cmd_demo)
 
     p_dl = sub.add_parser("download-models", help="Download model weights.")
     p_dl.add_argument(

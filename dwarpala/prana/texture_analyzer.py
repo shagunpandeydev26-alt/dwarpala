@@ -13,8 +13,7 @@ than digital screens.
 import cv2
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple
-from sklearn.svm import SVC
+from typing import List
 
 from dwarpala.utils.logger import get_logger
 
@@ -72,10 +71,7 @@ class TextureAnalyzer:
         self.fft_threshold = fft_threshold
         self.spoof_threshold = spoof_threshold
 
-        logger.info(
-            f"TextureAnalyzer: radii={self.lbp_radii}, "
-            f"fft_thresh={fft_threshold}"
-        )
+        logger.info(f"TextureAnalyzer: radii={self.lbp_radii}, " f"fft_thresh={fft_threshold}")
 
     def analyze(self, face_image: np.ndarray) -> TextureResult:
         """
@@ -109,6 +105,31 @@ class TextureAnalyzer:
         logger.info(str(result))
         return result
 
+    def get_fft_spectrum(self, face_image: np.ndarray) -> np.ndarray:
+        """
+        Read-only accessor for visualization: return the log-magnitude FFT
+        spectrum the analyzer computes internally for the FFT liveness score.
+
+        This recomputes the exact `magnitude` array used by
+        `_compute_fft_liveness` (windowed 2D FFT, fftshift, log1p, max-normalized)
+        WITHOUT affecting any score. Screens/prints show concentrated periodic
+        peaks here; real skin shows a smoother natural fall-off.
+
+        Args:
+            face_image: Aligned face image (H, W, 3) in RGB.
+
+        Returns:
+            2D float32 magnitude spectrum in [0, 1], shape (H, W).
+        """
+        gray = cv2.cvtColor(face_image, cv2.COLOR_RGB2GRAY)
+        rows, cols = gray.shape
+        window = np.outer(np.hanning(rows), np.hanning(cols))
+        windowed = gray.astype(np.float64) * window
+        f_shift = np.fft.fftshift(np.fft.fft2(windowed))
+        magnitude = np.log1p(np.abs(f_shift))
+        magnitude = magnitude / (magnitude.max() + 1e-10)
+        return magnitude.astype(np.float32)
+
     def _compute_lbp_liveness(self, gray: np.ndarray) -> float:
         """
         Compute LBP-based liveness score.
@@ -125,9 +146,7 @@ class TextureAnalyzer:
             lbp = self._compute_lbp(gray, radius, n_points)
 
             # Compute normalized histogram
-            hist, _ = np.histogram(
-                lbp.ravel(), bins=n_points + 2, range=(0, n_points + 2)
-            )
+            hist, _ = np.histogram(lbp.ravel(), bins=n_points + 2, range=(0, n_points + 2))
             hist = hist.astype(np.float64)
             hist = hist / (hist.sum() + 1e-10)
             all_histograms.append(hist)
@@ -149,9 +168,7 @@ class TextureAnalyzer:
 
         return 0.7 * normalized_entropy + 0.3 * variance_score
 
-    def _compute_lbp(
-        self, gray: np.ndarray, radius: int, n_points: int
-    ) -> np.ndarray:
+    def _compute_lbp(self, gray: np.ndarray, radius: int, n_points: int) -> np.ndarray:
         """
         Compute Local Binary Pattern image.
 
@@ -169,7 +186,6 @@ class TextureAnalyzer:
             # Bilinear interpolation for sub-pixel positions
             fy, fx = int(np.floor(dy)), int(np.floor(dx))
             cy, cx = fy + 1, fx + 1
-            ty, tx = dy - fy, dx - fx
 
             # Boundary-safe indexing
             r_start = max(0, -min(fy, cy))
@@ -197,12 +213,9 @@ class TextureAnalyzer:
                     min(cols, c_end + round(dx)),
                 )
 
-                if rr.stop - rr.start == r_end - r_start and \
-                   rc.stop - rc.start == c_end - c_start:
+                if rr.stop - rr.start == r_end - r_start and rc.stop - rc.start == c_end - c_start:
                     neighbor = gray[rr, rc].astype(np.float64)
-                    lbp[r_start:r_end, c_start:c_end] += (
-                        (neighbor >= center).astype(np.uint32) << i
-                    )
+                    lbp[r_start:r_end, c_start:c_end] += (neighbor >= center).astype(np.uint32) << i
 
         return lbp
 
@@ -291,10 +304,7 @@ class TextureAnalyzer:
             x_coords = (center_c + r * np.cos(theta)).astype(int)
 
             # Boundary check
-            valid = (
-                (y_coords >= 0) & (y_coords < rows) &
-                (x_coords >= 0) & (x_coords < cols)
-            )
+            valid = (y_coords >= 0) & (y_coords < rows) & (x_coords >= 0) & (x_coords < cols)
             if valid.sum() > 0:
                 radial_profile[r] = np.mean(magnitude[y_coords[valid], x_coords[valid]])
 

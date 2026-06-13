@@ -453,6 +453,32 @@ class DwarpalaPipeline:
             details=details,
         )
 
+    def load_selfie_frames(
+        self,
+        selfie_source: Union[str, Path, np.ndarray, List[np.ndarray]],
+    ) -> Optional[List[np.ndarray]]:
+        """
+        Read-only helper for visualization (UI Liveness Lab): return the list of
+        RGB frames the pipeline would feed to the temporal/rPPG analyzers, using
+        the SAME video handling as ``verify``/``liveness_only`` (no duplicate
+        frame extraction logic).
+
+        Args:
+            selfie_source: Selfie image/video (path, RGB array, or frame list).
+
+        Returns:
+            List of RGB frames for a video (or a single-frame list for an image),
+            or None if nothing decodable was found. The same frame list can be
+            passed back into ``liveness_only`` and ``rppg_analyzer.get_rppg_waveform``
+            so the plotted waveform matches the scored signal exactly.
+        """
+        selfie_img, selfie_frames = self._load_selfie(selfie_source)
+        if selfie_frames:
+            return selfie_frames
+        if selfie_img is not None:
+            return [selfie_img]
+        return None
+
     def liveness_only(
         self,
         selfie_source: Union[str, Path, np.ndarray, List[np.ndarray]],

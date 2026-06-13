@@ -94,3 +94,31 @@ Built `dwarpala/api/` exposing the existing `DwarpalaPipeline` over REST. The AP
 ## Pre-Phase 4 — Default detector → SCRFD with Haar fallback (2026-06-13)
 
 Default `detector_backend` changed from OpenCV Haar to InsightFace **SCRFD** (pipeline constructor default + `configs/inference_config.yaml`; the YAML `kavach` block is not yet wired at runtime, so the constructor default is the effective one). Haar remains an explicit graceful fallback: if SCRFD/InsightFace fails to load, the detector falls back to Haar and logs a loud `DETECTION QUALITY IS DEGRADED` warning (never silent). **Landmark-order check confirmed:** SCRFD's `face.kps` order is byte-identical to the aligner's `ARCFACE_REFERENCE_112` (left eye, right eye, nose, left mouth, right mouth) — same as insightface's canonical `arcface_dst` template — so no remapping is needed and embeddings are unaffected. MiniFASNet still receives the original-image bbox (x,y,w,h) unchanged; liveness scores held within tolerance (regression guard green, integration `/verify` ACCEPTs with liveness ~0.92). The integration test now drives the positive ACCEPT path (matching selfie pair) instead of asserting only a "sane verdict". Added a fallback unit test (forces SCRFD unavailable → asserts Haar fallback + degradation warning). 62 tests pass; ruff + black clean.
+
+---
+
+## Phase 4 — Gradio Demo UI (2026-06-13)
+
+**Status: ✅ COMPLETE**
+
+Built `dwarpala/ui/app.py` — a two-tab Gradio demo (Verify + Liveness Lab) that is pure presentation over the proven pipeline. The callbacks call the SAME `DwarpalaPipeline.verify` / `liveness_only` methods the REST API uses, in-process (one verification code path across API + UI). No verification/matching/liveness logic lives in the UI; the display helpers (verdict colors, score bars, breakdown rows, rPPG figure) are pure functions, unit-tested directly with synthetic inputs.
+
+### 🔴 Critical bug found and fixed: RGB→BGR seam to MiniFASNet (security-relevant)
+
+While prepping the RGB/BGR parity guard, found that the pipeline feeds MiniFASNet the wrong channel order. The pipeline is RGB-native and the fusion gate forwarded `original_image` (RGB) straight to `MiniFASAnalyzer` (which expects **BGR**, the order its weights were trained on). Effect was severe and asymmetric: a screen-replay spoof scored **0.95 (LIVE)** instead of **0.30 (SPOOF)** — a spoof passing as live through the real pipeline. (MiniFASNet was validated standalone in Phase 2 with `cv2.imread` BGR, so the bug was invisible until traced through the pipeline.) **Fix:** `fusion_gate.analyze` now converts `original_image` RGB→BGR before the MiniFASNet call only (texture/temporal/rPPG stay RGB) — input marshaling, not scoring logic. After the fix, pipeline MiniFASNet scores match the validated BGR values exactly (selfie 0.999, print 0.049, screencapture 0.305). Guarded by two `requires_models` tests: an RGB-array-vs-file parity test and a screencapture-spoof regression.
+
+### Tabs (every number/plot is real pipeline output)
+- **Verify:** ID + selfie (upload/webcam) → `pipeline.verify`; colored verdict banner (green ACCEPT / red REJECT / amber MANUAL_REVIEW), match + liveness score bars, a 4-layer liveness breakdown table (minifas/texture/temporal/rppg, each with score + signal_status), the pipeline's `explanation`, and latency. Single-image selfies show temporal+rPPG as **NOT_APPLICABLE** (never a misleading 0). No-face/quality REJECTs render the pipeline's reason without crashing.
+- **Liveness Lab:** webcam/uploaded video → `pipeline.liveness_only`; a **real matplotlib rPPG waveform** with estimated BPM when a confident heartbeat exists, otherwise an honest "insufficient signal — need ≥5s stable video" message (gated on the analyzer's `has_valid_heartbeat`, never a fabricated trace); the 4-layer breakdown (weak rPPG surfaced as **LOW_CONFIDENCE**); and a real **FFT texture map** artifact.
+
+### Additive analyzer/pipeline accessors (no scoring changes)
+- `TextureAnalyzer.get_fft_spectrum()` — read-only; recomputes the exact log-magnitude FFT the FFT-liveness score already uses, for the texture viz.
+- `DwarpalaPipeline.load_selfie_frames()` — read-only; returns the RGB frame list via the existing `_load_selfie` handling so the UI extracts frames once and feeds the same list to `liveness_only` and `rppg_analyzer.get_rppg_waveform` (the plotted pulse is exactly the scored signal). rPPG already exposed `get_rppg_waveform()` (used as-is).
+- Also removed a pre-existing dead assignment in `texture_analyzer._compute_lbp` to keep ruff clean.
+
+### Engineering
+- Pipeline loaded once in `build_demo` and closed over by callbacks (no per-interaction reload); `pipeline_factory` injection lets tests mock it.
+- RGB/BGR discipline: UI passes gradio RGB arrays straight to the RGB-native pipeline; a `requires_models` parity test asserts file-load vs gradio-array give identical scores.
+- `demo` CLI subcommand + `demo:` config block (host/port/share; `share=False` by default with a third-party-tunnel warning). matplotlib added to the `demo` extra.
+
+End-to-end smoke (real pipeline): Tab 1 → ACCEPT in ~740 ms with real breakdown; Tab 2 on a 5s clip → temporal OK, rPPG LOW_CONFIDENCE with the honest plot message, real FFT map. 73 tests pass (62 prior + 11 UI); ruff + black clean.

@@ -55,6 +55,7 @@ demo = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
     "python-multipart>=0.0.6",
+    "matplotlib>=3.7.0",
 ]
 training = [
     "tensorboard>=2.14.0",

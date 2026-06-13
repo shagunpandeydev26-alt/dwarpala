@@ -15,10 +15,11 @@ Fusion strategy:
   weights are renormalized among available signals
 """
 
+import cv2
 import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 from dwarpala.prana.texture_analyzer import TextureAnalyzer, TextureResult
 from dwarpala.prana.temporal_analyzer import TemporalAnalyzer, TemporalResult
@@ -113,9 +114,7 @@ class LivenessFusionGate:
             fps: Video frame rate.
             model_dir: Model directory for MiniFASNet weights.
         """
-        self.weights = (
-            weights if weights is not None else dict(DEFAULT_FUSION_WEIGHTS)
-        )
+        self.weights = weights if weights is not None else dict(DEFAULT_FUSION_WEIGHTS)
         self.early_exit_threshold = early_exit_threshold
         self.liveness_threshold = liveness_threshold
         self.fps = fps
@@ -124,9 +123,7 @@ class LivenessFusionGate:
         self.texture_analyzer = TextureAnalyzer() if enable_texture else None
         self.temporal_analyzer = TemporalAnalyzer(fps=fps) if enable_temporal else None
         self.rppg_analyzer = RPPGAnalyzer(fps=fps) if enable_rppg else None
-        self.minifas_analyzer = (
-            MiniFASAnalyzer(model_dir=model_dir) if enable_minifas else None
-        )
+        self.minifas_analyzer = MiniFASAnalyzer(model_dir=model_dir) if enable_minifas else None
 
         active = []
         if enable_texture:
@@ -173,7 +170,13 @@ class LivenessFusionGate:
         # ═══ Layer 1: MiniFASNet (Passive Anti-Spoofing CNN) ═══
         if self.minifas_analyzer is not None and original_image is not None and bbox is not None:
             try:
-                minifas_result = self.minifas_analyzer.analyze(original_image, bbox)
+                # original_image arrives RGB (pipeline convention), but MiniFASNet
+                # was trained on — and its preprocess expects — BGR. Convert here
+                # so the channel order matches the weights. Skipping this flips
+                # screen-replay spoofs to "live" (R/B swap). texture/temporal/rppg
+                # stay RGB; only this MiniFASNet input is BGR.
+                minifas_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2BGR)
+                minifas_result = self.minifas_analyzer.analyze(minifas_image, bbox)
                 signal_status["minifas"] = "OK"
 
                 # Early exit: MiniFASNet very confident spoof
@@ -241,9 +244,7 @@ class LivenessFusionGate:
         # ═══ Layer 3: Temporal Analysis (Motion) ═══
         if self.temporal_analyzer is not None and has_video:
             try:
-                temporal_result = self.temporal_analyzer.analyze(
-                    video_frames, landmarks_per_frame
-                )
+                temporal_result = self.temporal_analyzer.analyze(video_frames, landmarks_per_frame)
                 signal_status["temporal"] = "OK"
             except Exception as e:
                 logger.warning(f"Temporal analysis failed: {e}")
@@ -256,9 +257,7 @@ class LivenessFusionGate:
         rppg_override = False
         if self.rppg_analyzer is not None and has_video:
             try:
-                rppg_result = self.rppg_analyzer.analyze(
-                    video_frames, landmarks_per_frame
-                )
+                rppg_result = self.rppg_analyzer.analyze(video_frames, landmarks_per_frame)
                 signal_status["rppg"] = "OK"
 
                 # rPPG override: valid heartbeat is strong live evidence
@@ -284,7 +283,10 @@ class LivenessFusionGate:
 
         # ═══ Fusion ═══
         fused_score = self._fuse_scores(
-            minifas_result, texture_result, temporal_result, rppg_result,
+            minifas_result,
+            texture_result,
+            temporal_result,
+            rppg_result,
         )
 
         # Apply rPPG override: if we detected a valid heartbeat, boost score
@@ -296,8 +298,12 @@ class LivenessFusionGate:
         is_live = fused_score >= self.liveness_threshold
 
         explanation = self._generate_explanation(
-            is_live, fused_score, minifas_result, texture_result,
-            temporal_result, rppg_result,
+            is_live,
+            fused_score,
+            minifas_result,
+            texture_result,
+            temporal_result,
+            rppg_result,
         )
 
         verdict = LivenessVerdict(
@@ -370,14 +376,10 @@ class LivenessFusionGate:
 
         if is_live:
             parts.append(
-                f"Subject appears to be a live person "
-                f"(confidence: {fused_score:.1%})."
+                f"Subject appears to be a live person " f"(confidence: {fused_score:.1%})."
             )
         else:
-            parts.append(
-                f"Spoof attack detected "
-                f"(confidence: {1 - fused_score:.1%})."
-            )
+            parts.append(f"Spoof attack detected " f"(confidence: {1 - fused_score:.1%}).")
 
         if minifas_result:
             if minifas_result.prediction == "live":
@@ -393,17 +395,14 @@ class LivenessFusionGate:
 
         if temporal_result:
             if temporal_result.saccade_count > 0:
-                parts.append(
-                    f"Detected {temporal_result.saccade_count} micro-saccades."
-                )
+                parts.append(f"Detected {temporal_result.saccade_count} micro-saccades.")
             else:
                 parts.append("No involuntary eye movements detected.")
 
         if rppg_result:
             if rppg_result.has_valid_heartbeat:
                 parts.append(
-                    f"Valid cardiac rhythm detected: "
-                    f"{rppg_result.heart_rate_bpm:.0f} BPM."
+                    f"Valid cardiac rhythm detected: " f"{rppg_result.heart_rate_bpm:.0f} BPM."
                 )
             else:
                 parts.append("No valid cardiac signal detected.")

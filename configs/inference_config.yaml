@@ -68,3 +68,12 @@ api:
   cors_origins: ["*"]
   audit_log: "off"                   # "off" | "sqlite"
   audit_db: "audit.db"               # sqlite path when audit_log == "sqlite"
+
+# Gradio demo UI (Phase 4). Overridable by env vars:
+#   DWARPALA_DEMO_HOST, DWARPALA_DEMO_PORT, DWARPALA_DEMO_SHARE
+demo:
+  host: "127.0.0.1"
+  port: 7860
+  # share=False by default: do NOT open a public gradio.live tunnel (routes
+  # uploaded faces through a third party). Enable only for trusted demos.
+  share: false
