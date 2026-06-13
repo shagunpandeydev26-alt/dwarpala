@@ -1,16 +1,22 @@
 """
 Embedding extraction pipeline for Dwarpala.
-Takes an aligned face image and produces a 512-D normalized embedding
-using the ViT backbone.
+
+Supports two backends:
+1. **insightface** (default): Uses buffalo_l ArcFace R50 (w600k_r50.onnx)
+   via onnxruntime. Produces real, discriminative 512-D face embeddings.
+   Requires model download via `dwarpala download-models`.
+
+2. **vit**: Uses the ViT backbone from timm with ImageNet pretrained weights.
+   This is the TRAINING-READY research path — the ViT backbone is intended
+   to be fine-tuned with ArcFace loss on a face dataset. With ImageNet-only
+   weights, embeddings are NOT face-discriminative.
 """
 
-import torch
 import numpy as np
 import cv2
 from typing import Optional, Union
 from pathlib import Path
 
-from dwarpala.swarupa.backbone import ViTBackbone
 from dwarpala.utils.logger import get_logger
 
 logger = get_logger("swarupa.embedding")
@@ -19,106 +25,168 @@ logger = get_logger("swarupa.embedding")
 class EmbeddingExtractor:
     """
     Extracts face embeddings from aligned face images.
-    Handles image preprocessing, model inference, and optional ONNX runtime.
+
+    The default backend is InsightFace (buffalo_l ArcFace R50), which provides
+    real face recognition capability (~99.8% on LFW). The ViT backend is
+    available for research/training purposes but requires fine-tuning.
 
     Usage:
-        extractor = EmbeddingExtractor(weights_path="weights/swarupa.pth")
+        # Default: InsightFace (recommended)
+        extractor = EmbeddingExtractor(backend="insightface")
         embedding = extractor.extract(aligned_face_rgb)  # np.ndarray (512,)
+
+        # Research: ViT (requires fine-tuning for face tasks)
+        extractor = EmbeddingExtractor(backend="vit", allow_untrained=True)
     """
+
+    SUPPORTED_BACKENDS = ("insightface", "vit")
 
     def __init__(
         self,
+        backend: str = "insightface",
         weights_path: Optional[Union[str, Path]] = None,
         model_name: str = "vit_base_patch16_224",
         embedding_dim: int = 512,
         device: str = "auto",
         use_onnx: bool = False,
+        allow_untrained: bool = False,
+        model_dir: Optional[Path] = None,
     ):
         """
         Args:
-            weights_path: Path to trained model weights (.pth or .onnx).
-            model_name: timm model name for the backbone.
+            backend: 'insightface' (default, real model) or 'vit' (research).
+            weights_path: Path to model weights (for ViT: .pth, for InsightFace: .onnx).
+            model_name: timm model name (ViT backend only).
             embedding_dim: Output embedding dimension.
-            device: 'auto', 'cpu', 'cuda', or 'cuda:0'.
-            use_onnx: Whether to use ONNX Runtime for inference.
+            device: 'auto', 'cpu', 'cuda' (ViT backend only).
+            use_onnx: Use ONNX runtime (ViT backend only).
+            allow_untrained: Allow ViT backend without face-specific weights.
+                Must be True to use ViT with ImageNet-only weights.
+            model_dir: Model directory for InsightFace model lookup.
         """
+        if backend not in self.SUPPORTED_BACKENDS:
+            raise ValueError(
+                f"Unknown backend: {backend}. "
+                f"Supported: {self.SUPPORTED_BACKENDS}"
+            )
+
+        self.backend = backend
         self.embedding_dim = embedding_dim
-        self.use_onnx = use_onnx
 
-        # Resolve device
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if backend == "insightface":
+            self._init_insightface(weights_path, model_dir)
         else:
-            self.device = torch.device(device)
-
-        if use_onnx and weights_path and str(weights_path).endswith(".onnx"):
-            self._init_onnx(weights_path)
-        else:
-            self._init_pytorch(model_name, embedding_dim, weights_path)
+            self._init_vit(
+                model_name, embedding_dim, weights_path, device,
+                use_onnx, allow_untrained
+            )
 
         logger.info(
-            f"EmbeddingExtractor: device={self.device}, "
-            f"onnx={use_onnx}, dim={embedding_dim}"
+            f"EmbeddingExtractor: backend={backend}, dim={embedding_dim}"
         )
 
-    def _init_pytorch(
+    def _init_insightface(
+        self,
+        weights_path: Optional[Union[str, Path]],
+        model_dir: Optional[Path],
+    ) -> None:
+        """Initialize InsightFace ArcFace R50 backend."""
+        from dwarpala.swarupa.insightface_embedder import InsightFaceEmbedder
+
+        self._embedder = InsightFaceEmbedder(
+            model_path=weights_path,
+            model_dir=model_dir,
+        )
+        self.embedding_dim = self._embedder.embedding_dim
+
+    def _init_vit(
         self,
         model_name: str,
         embedding_dim: int,
         weights_path: Optional[Union[str, Path]],
-    ):
-        """Initialize PyTorch backbone."""
-        self.model = ViTBackbone(
-            model_name=model_name,
-            pretrained=True,
-            embedding_dim=embedding_dim,
-        )
+        device: str,
+        use_onnx: bool,
+        allow_untrained: bool,
+    ) -> None:
+        """Initialize ViT backbone (research/training path)."""
+        import torch
+        from dwarpala.swarupa.backbone import ViTBackbone
 
-        if weights_path and Path(weights_path).exists():
-            state_dict = torch.load(
-                weights_path, map_location=self.device, weights_only=True
+        # Gate: ViT without face weights is NOT suitable for inference
+        has_face_weights = weights_path and Path(weights_path).exists()
+        if not has_face_weights and not allow_untrained:
+            raise RuntimeError(
+                "ViT backend requires face-specific trained weights for inference.\n"
+                "Either:\n"
+                "  1. Use backend='insightface' (recommended for inference)\n"
+                "  2. Provide weights_path to a face-trained ViT checkpoint\n"
+                "  3. Set allow_untrained=True (for testing/research only — "
+                "produces random embeddings)"
             )
-            self.model.load_state_dict(state_dict, strict=False)
-            logger.info(f"Loaded weights from {weights_path}")
 
-        self.model.to(self.device)
-        self.model.eval()
+        # Resolve device
+        if device == "auto":
+            self.device = torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+        else:
+            self.device = torch.device(device)
 
-    def _init_onnx(self, onnx_path: Union[str, Path]):
-        """Initialize ONNX Runtime session."""
-        import onnxruntime as ort
+        self.use_onnx = use_onnx
 
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        self.ort_session = ort.InferenceSession(str(onnx_path), providers=providers)
-        self.input_name = self.ort_session.get_inputs()[0].name
-        logger.info(f"Loaded ONNX model from {onnx_path}")
+        if use_onnx and weights_path and str(weights_path).endswith(".onnx"):
+            import onnxruntime as ort
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            self.ort_session = ort.InferenceSession(
+                str(weights_path), providers=providers
+            )
+            self.input_name = self.ort_session.get_inputs()[0].name
+            logger.info(f"Loaded ViT ONNX model from {weights_path}")
+        else:
+            self.model = ViTBackbone(
+                model_name=model_name,
+                pretrained=True,
+                embedding_dim=embedding_dim,
+            )
+            if has_face_weights:
+                state_dict = torch.load(
+                    weights_path, map_location=self.device, weights_only=True
+                )
+                self.model.load_state_dict(state_dict, strict=False)
+                logger.info(f"Loaded face-trained ViT weights from {weights_path}")
+            elif allow_untrained:
+                logger.warning(
+                    "ViT backend using ImageNet-only weights — "
+                    "embeddings are NOT face-discriminative. "
+                    "This is only suitable for testing."
+                )
+
+            self.model.to(self.device)
+            self.model.eval()
+
+        self._embedder = None  # Mark that we're using ViT path
 
     def preprocess(self, face_image: np.ndarray) -> np.ndarray:
         """
-        Preprocess aligned face image for the backbone.
+        Preprocess aligned face image for the active backend.
 
         Args:
             face_image: Aligned face (H, W, 3) in RGB, uint8.
 
         Returns:
-            Preprocessed tensor as numpy array (1, 3, 224, 224).
+            Preprocessed tensor as numpy array.
         """
-        # Resize to 224x224 for ViT input
-        img = cv2.resize(face_image, (224, 224), interpolation=cv2.INTER_LINEAR)
+        if self.backend == "insightface":
+            return self._embedder.preprocess(face_image)
 
-        # Normalize to [-1, 1]
+        # ViT preprocessing: resize 224×224, normalize [-1, 1]
+        img = cv2.resize(face_image, (224, 224), interpolation=cv2.INTER_LINEAR)
         img = img.astype(np.float32) / 255.0
         img = (img - 0.5) / 0.5
-
-        # HWC → CHW
-        img = np.transpose(img, (2, 0, 1))
-
-        # Add batch dimension
+        img = np.transpose(img, (2, 0, 1))  # HWC → CHW
         img = np.expand_dims(img, axis=0)
-
         return img
 
-    @torch.no_grad()
     def extract(self, face_image: np.ndarray) -> np.ndarray:
         """
         Extract embedding from a single aligned face image.
@@ -129,23 +197,31 @@ class EmbeddingExtractor:
         Returns:
             L2-normalized embedding (embedding_dim,).
         """
+        if self.backend == "insightface":
+            return self._embedder.extract(face_image)
+
+        # ViT path
+        import torch
+
         preprocessed = self.preprocess(face_image)
 
         if self.use_onnx and hasattr(self, "ort_session"):
-            outputs = self.ort_session.run(None, {self.input_name: preprocessed})
+            outputs = self.ort_session.run(
+                None, {self.input_name: preprocessed}
+            )
             embedding = outputs[0][0]
         else:
-            tensor = torch.from_numpy(preprocessed).to(self.device)
-            embedding = self.model(tensor).cpu().numpy()[0]
+            with torch.no_grad():
+                tensor = torch.from_numpy(preprocessed).to(self.device)
+                embedding = self.model(tensor).cpu().numpy()[0]
 
-        # Ensure L2 normalization
+        # L2 normalize
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
 
         return embedding
 
-    @torch.no_grad()
     def extract_batch(self, face_images: list) -> np.ndarray:
         """
         Extract embeddings for a batch of aligned face images.
@@ -156,43 +232,29 @@ class EmbeddingExtractor:
         Returns:
             L2-normalized embeddings (N, embedding_dim).
         """
+        if self.backend == "insightface":
+            return self._embedder.extract_batch(face_images)
+
+        # ViT path
+        import torch
+
         preprocessed = np.concatenate(
             [self.preprocess(img) for img in face_images], axis=0
         )
 
         if self.use_onnx and hasattr(self, "ort_session"):
-            outputs = self.ort_session.run(None, {self.input_name: preprocessed})
+            outputs = self.ort_session.run(
+                None, {self.input_name: preprocessed}
+            )
             embeddings = outputs[0]
         else:
-            tensor = torch.from_numpy(preprocessed).to(self.device)
-            embeddings = self.model(tensor).cpu().numpy()
+            with torch.no_grad():
+                tensor = torch.from_numpy(preprocessed).to(self.device)
+                embeddings = self.model(tensor).cpu().numpy()
 
-        # L2 normalize each embedding
+        # L2 normalize
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms = np.maximum(norms, 1e-10)
         embeddings = embeddings / norms
 
         return embeddings
-
-    def export_onnx(self, output_path: Union[str, Path]):
-        """
-        Export the backbone to ONNX format for optimized inference.
-
-        Args:
-            output_path: Path to save the ONNX model.
-        """
-        if self.use_onnx:
-            logger.warning("Cannot export from ONNX session")
-            return
-
-        dummy_input = torch.randn(1, 3, 224, 224).to(self.device)
-        torch.onnx.export(
-            self.model,
-            dummy_input,
-            str(output_path),
-            opset_version=17,
-            input_names=["input"],
-            output_names=["embedding"],
-            dynamic_axes={"input": {0: "batch_size"}, "embedding": {0: "batch_size"}},
-        )
-        logger.info(f"Exported ONNX model to {output_path}")

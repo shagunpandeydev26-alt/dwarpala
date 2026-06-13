@@ -7,27 +7,51 @@ device: "auto"                       # auto | cpu | cuda
 # Weights directory (relative to project root)
 weights_dir: "weights/"
 
+# Model storage directory for downloaded models
+model_dir: "~/.dwarpala/models/"
+
 # Pre-processing
 kavach:
+  detector_backend: "opencv"         # opencv (fallback) | scrfd (InsightFace)
   detector_confidence: 0.6
   align_size: [112, 112]
   quality_check: true
+  # ID photos get looser quality thresholds (low-res, glossy, moiré)
+  id_quality:
+    min_blur_score: 20.0             # Looser than selfie (50.0)
+    min_brightness: 30               # Looser than selfie (40)
+    max_brightness: 240              # Looser than selfie (220)
+    min_face_size: 40                # Looser than selfie (80)
 
 # Identity matching
 swarupa:
-  use_onnx: false                    # Set true when ONNX model exported
-  match_threshold: 0.45
+  # Backend: 'insightface' (default, uses buffalo_l ArcFace R50 ~99.8% LFW)
+  #          'vit' (research path, requires fine-tuning for face tasks)
+  backend: "insightface"
+  use_onnx: false                    # Only for ViT backend ONNX export
+  # Match threshold calibrated from LFW benchmark (see BENCHMARKS.md)
+  match_threshold: 0.40              # Cosine similarity threshold for match
+  # Review band: scores within this range of threshold → MANUAL_REVIEW
+  review_band: 0.10                  # 0.30-0.40 = MANUAL_REVIEW
 
 # Liveness
 prana:
   enable_texture: true
   enable_temporal: true
   enable_rppg: true
-  early_exit: true                   # Skip rPPG if texture/temporal confident
+  enable_minifas: true               # MiniFASNet anti-spoofing model
+  early_exit: true                   # Skip deeper checks if confident spoof
   video_frames: 30                   # Frames needed for temporal + rPPG
+  # Fusion weights (sum to 1.0). MiniFASNet is the strongest passive signal.
+  # Calibrated from liveness benchmark (see BENCHMARKS.md).
+  fusion_weights:
+    minifas: 0.40                    # MiniFASNet passive anti-spoofing
+    texture: 0.25                    # LBP + FFT texture analysis
+    temporal: 0.15                   # Micro-saccade + tremor detection
+    rppg: 0.20                       # Remote PPG heartbeat detection
 
 # Decision thresholds
 decision:
-  match_threshold: 0.45              # Face similarity threshold
+  match_threshold: 0.40              # Face similarity threshold
   liveness_threshold: 0.5            # Liveness score threshold
   review_band: 0.1                   # If within this band of threshold → MANUAL_REVIEW

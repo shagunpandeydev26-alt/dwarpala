@@ -56,6 +56,39 @@ class VerificationResult:
             f"{'═' * 60}"
         )
 
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dictionary."""
+        result = {
+            "verdict": self.verdict,
+            "match_score": round(self.match_score, 4),
+            "latency_ms": round(self.latency_ms, 1),
+            "explanation": self.explanation,
+        }
+        if self.liveness_verdict:
+            result["liveness_score"] = round(self.liveness_verdict.score, 4)
+            result["liveness_breakdown"] = {}
+            if self.liveness_verdict.texture_result:
+                result["liveness_breakdown"]["texture"] = round(
+                    self.liveness_verdict.texture_result.score, 4
+                )
+            if self.liveness_verdict.temporal_result:
+                result["liveness_breakdown"]["temporal"] = round(
+                    self.liveness_verdict.temporal_result.score, 4
+                )
+            if self.liveness_verdict.rppg_result:
+                result["liveness_breakdown"]["rppg"] = round(
+                    self.liveness_verdict.rppg_result.score, 4
+                )
+            if hasattr(self.liveness_verdict, "minifas_result") and self.liveness_verdict.minifas_result:
+                result["liveness_breakdown"]["minifas"] = round(
+                    self.liveness_verdict.minifas_result.score, 4
+                )
+        if self.match_result:
+            result["match_confidence"] = self.match_result.confidence
+            result["match_needs_review"] = self.match_result.needs_review
+        result["details"] = self.details
+        return result
+
 
 class DwarpalaPipeline:
     """
@@ -81,22 +114,37 @@ class DwarpalaPipeline:
     def __init__(
         self,
         detector_backend: str = "opencv",
+        embedding_backend: str = "insightface",
         match_threshold: float = 0.45,
         liveness_threshold: float = 0.5,
         review_band: float = 0.1,
         enable_liveness: bool = True,
         weights_path: Optional[str] = None,
         device: str = "auto",
+        allow_untrained: bool = False,
+        model_dir: Optional[Path] = None,
+        # ID image quality thresholds (looser — ID photos are low-res, glossy)
+        id_min_blur: float = 20.0,
+        id_min_brightness: float = 30.0,
+        id_max_brightness: float = 240.0,
+        id_min_face_size: int = 40,
     ):
         """
         Args:
             detector_backend: Face detection backend.
+            embedding_backend: 'insightface' (default) or 'vit'.
             match_threshold: Face similarity threshold.
             liveness_threshold: Liveness score threshold.
             review_band: Uncertainty band for MANUAL_REVIEW.
             enable_liveness: Whether to run liveness checks.
             weights_path: Path to model weights.
             device: Compute device.
+            allow_untrained: Allow ViT backend without face weights.
+            model_dir: Directory for model files.
+            id_min_blur: Looser blur threshold for ID photos.
+            id_min_brightness: Looser brightness min for ID photos.
+            id_max_brightness: Looser brightness max for ID photos.
+            id_min_face_size: Looser face size min for ID photos.
         """
         logger.info("Initializing Dwarpala Pipeline...")
         init_start = time.time()
@@ -107,12 +155,26 @@ class DwarpalaPipeline:
             max_faces=1,
         )
         self.aligner = FaceAligner(output_size=(112, 112))
+        # Standard quality gate for selfie
         self.quality = QualityAssessor()
+        # Looser quality gate for ID document images
+        # Rationale: ID card photos are low-res, often glossy/grainy,
+        # and may have moiré patterns. Calibrated from empirical testing.
+        self.id_quality = QualityAssessor(
+            min_blur_score=id_min_blur,
+            min_brightness=id_min_brightness,
+            max_brightness=id_max_brightness,
+            min_face_size=id_min_face_size,
+            min_landmark_confidence=0.5,
+        )
 
         # Phase 2: Swarupa (True Form — Identity)
         self.extractor = EmbeddingExtractor(
+            backend=embedding_backend,
             weights_path=weights_path,
             device=device,
+            allow_untrained=allow_untrained,
+            model_dir=model_dir,
         )
         self.matcher = FaceMatcher(
             threshold=match_threshold,
@@ -178,7 +240,8 @@ class DwarpalaPipeline:
             details["selfie_confidence"] = selfie_detection.confidence
 
             # ═══ STEP 3: Quality Check ═══
-            id_quality = self.quality.assess(id_img, id_detection)
+            # Use LOOSER thresholds for ID image (low-res, glossy, moiré)
+            id_quality = self.id_quality.assess(id_img, id_detection)
             selfie_quality = self.quality.assess(selfie_img, selfie_detection)
 
             details["id_quality"] = str(id_quality)
@@ -188,6 +251,14 @@ class DwarpalaPipeline:
                 return self._make_reject(
                     start_time,
                     f"Selfie quality insufficient: {', '.join(selfie_quality.issues)}",
+                )
+
+            # ID quality is logged but NOT used to reject — ID photos are
+            # often low-quality by nature. The matching model handles this.
+            if not id_quality.is_acceptable:
+                logger.warning(
+                    f"ID quality below threshold (non-blocking): "
+                    f"{', '.join(id_quality.issues)}"
                 )
 
             # ═══ STEP 4: Face Alignment ═══
@@ -255,6 +326,11 @@ class DwarpalaPipeline:
             path = Path(source)
             if path.suffix.lower() in (".mp4", ".avi", ".mov", ".webm"):
                 frames, _ = read_video_frames(str(path), max_frames=30)
+                if not frames:
+                    raise ValueError(
+                        f"No frames read from video: {path}. "
+                        f"File may be corrupted or use an unsupported codec."
+                    )
                 rgb_frames = frames_to_rgb(frames)
                 return rgb_frames[0] if rgb_frames else None, rgb_frames
             else:
