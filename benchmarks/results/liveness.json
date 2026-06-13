@@ -1,0 +1,133 @@
+{
+  "source": "tests/testimg (built-in SMALL-SAMPLE smoke set, n=4)",
+  "is_small_sample_fixture": true,
+  "date": "2026-06-13",
+  "n_images": 4,
+  "n_live": 2,
+  "n_spoof": 2,
+  "attack_types": [
+    "print",
+    "screen"
+  ],
+  "detection_failures": 0,
+  "threshold": 0.5,
+  "temporal_evaluated": false,
+  "rppg_evaluated": false,
+  "per_sample": [
+    {
+      "name": "printed.jpeg",
+      "label": 0,
+      "attack": "print",
+      "minifas": 0.04944240164331859,
+      "texture": 1.0,
+      "temporal": null,
+      "rppg": null,
+      "fused": 0.41504147793434987
+    },
+    {
+      "name": "screencapture.jpeg",
+      "label": 0,
+      "attack": "screen",
+      "minifas": 0.3046855521388352,
+      "texture": 0.7929982626764845,
+      "temporal": null,
+      "rppg": null,
+      "fused": 0.4924981331148542
+    },
+    {
+      "name": "selfie1.jpeg",
+      "label": 1,
+      "attack": "bona_fide",
+      "minifas": 0.9992297291755676,
+      "texture": 0.8051737578754941,
+      "temporal": null,
+      "rppg": null,
+      "fused": 0.9245928171370779
+    },
+    {
+      "name": "selfie2.jpeg",
+      "label": 1,
+      "attack": "bona_fide",
+      "minifas": 0.9998906254768372,
+      "texture": 0.784985267263635,
+      "temporal": null,
+      "rppg": null,
+      "fused": 0.9172347184717593
+    }
+  ],
+  "layers": {
+    "MiniFASNet": {
+      "apcer": 0.0,
+      "bpcer": 0.0,
+      "acer": 0.0,
+      "threshold": 0.5,
+      "n_evaluated": 4,
+      "confusion": {
+        "bona_fide": {
+          "accepted": 2,
+          "total": 2
+        },
+        "print": {
+          "rejected": 1,
+          "total": 1
+        },
+        "screen": {
+          "rejected": 1,
+          "total": 1
+        }
+      }
+    },
+    "Texture (LBP+FFT)": {
+      "apcer": 1.0,
+      "bpcer": 0.0,
+      "acer": 0.5,
+      "threshold": 0.5,
+      "n_evaluated": 4,
+      "confusion": {
+        "bona_fide": {
+          "accepted": 2,
+          "total": 2
+        },
+        "print": {
+          "rejected": 0,
+          "total": 1
+        },
+        "screen": {
+          "rejected": 0,
+          "total": 1
+        }
+      }
+    },
+    "Temporal": {
+      "status": "N/A",
+      "reason": "needs video frames (still-image set)"
+    },
+    "rPPG": {
+      "status": "N/A",
+      "reason": "needs video frames (still-image set)"
+    },
+    "Fused gate": {
+      "apcer": 0.0,
+      "bpcer": 0.0,
+      "acer": 0.0,
+      "threshold": 0.5,
+      "n_evaluated": 4,
+      "confusion": {
+        "bona_fide": {
+          "accepted": 2,
+          "total": 2
+        },
+        "print": {
+          "rejected": 1,
+          "total": 1
+        },
+        "screen": {
+          "rejected": 1,
+          "total": 1
+        }
+      }
+    }
+  },
+  "rate_table": "| Layer | APCER \u2193 | BPCER \u2193 | ACER \u2193 | n |\n| --- | --- | --- | --- | --- |\n| MiniFASNet | 0.00% | 0.00% | 0.00% | 4 |\n| Texture (LBP+FFT) | 100.00% | 0.00% | 50.00% | 4 |\n| Temporal | N/A | N/A | N/A | \u2014 |\n| rPPG | N/A | N/A | N/A | \u2014 |\n| Fused gate | 0.00% | 0.00% | 0.00% | 4 |",
+  "count_table": "| Layer | live accepted | print rejected | screen rejected |\n| --- | --- | --- | --- |\n| MiniFASNet | 2/2 | 1/1 | 1/1 |\n| Texture (LBP+FFT) | 2/2 | 0/1 | 0/1 |\n| Temporal | N/A | N/A | N/A |\n| rPPG | N/A | N/A | N/A |\n| Fused gate | 2/2 | 1/1 | 1/1 |"
+}
