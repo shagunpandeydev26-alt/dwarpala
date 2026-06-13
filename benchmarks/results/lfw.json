@@ -1,0 +1,37 @@
+{
+  "dataset": "LFW test",
+  "date": "2026-06-13",
+  "pairs_requested": 1000,
+  "pairs_scored": 989,
+  "detection_failures": 11,
+  "detection_failures_genuine": 8,
+  "detection_failures_impostor": 3,
+  "detection_rate": 0.989,
+  "far_resolution": 0.002012072434607646,
+  "mean_genuine_sim": 0.630525978117409,
+  "mean_impostor_sim": 0.003131287424474715,
+  "accuracy_detected": 0.9797775530839231,
+  "accuracy_all_pairs": 0.972,
+  "elapsed_seconds": 527.7,
+  "n_genuine": 492,
+  "n_impostor": 497,
+  "accuracy": 0.9797775530839231,
+  "best_threshold": 0.2481936812400818,
+  "roc_auc": 0.9801123816067135,
+  "eer": 0.0364013348382981,
+  "eer_threshold": 0.1251383274793625,
+  "tar_at_far": {
+    "far=0.01": {
+      "tar": 0.959349593495935,
+      "threshold": 0.16237691044807434,
+      "measurable": true
+    },
+    "far=0.001": {
+      "tar": null,
+      "threshold": null,
+      "measurable": false
+    }
+  },
+  "markdown_table": "| Metric | Value |\n| --- | --- |\n| Pairs scored / requested | 989 / 1000 |\n| Detection failures | 11 (8 genuine, 3 impostor) |\n| Detection rate | 98.90% |\n| Accuracy (detected pairs) | 97.98% |\n| Accuracy (all pairs, fail\u2192reject) | 97.20% |\n| Best threshold (cosine) | 0.2482 |\n| ROC AUC | 0.9801 |\n| EER | 3.64% |\n| Mean genuine similarity | 0.6305 |\n| Mean impostor similarity | 0.0031 |\n| TAR @ FAR=1% | 95.93% (thr 0.1624) |\n| TAR @ FAR=0.1% | unmeasurable (need >497 impostors) |",
+  "roc_plot": "/home/code66/Downloads/shagun/dwarpala/benchmarks/results/lfw_roc.png"
+}
